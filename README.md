@@ -1,43 +1,23 @@
-# BCRYExporter
-This is ported version of BCRYExporter for Cryengine 5 from https://github.com/AFCStudio/BCRYExporter for Blender 2.8*
- 
-<b>Installation:</b>
-Copy `io_bcry_exporter` folder to blender_path\Scripts\Addons directory.
+# BCRY Exporter for Blender
 
-<b>Example:</b> C:\Users\ `Your_User_Name` \AppData\Roaming\Blender Foundation\Blender\2.80\scripts\addons
+BCRY Exporter is a Blender add-on designed to export geometries, skeletal armatures, physics proxies, and animations from Blender directly to CryEngine (and Lumberyard) via the COLLADA (DAE) format and the Resource Compiler (RC).
 
-<b>Documentation:</b> maybe soon
+## Key Features
+* **Geometry Export**: Supports CGF (static) and CGA (animated) mesh compilation.
+* **Skeletal Rigging**: Resolves standard CHR (character) and SKIN (skinned render mesh) formats.
+* **Animations**: Timeline, value, and marker-based ranges mapped to I_CAF and ANM tracks.
+* **Material & Texture Pipeline**: Automated `.mtl` material file generation and asynchronous DDS texture conversion.
+* **Diagnostics**: Built-in helpers to detect degenerate faces, multi-face lines, and unassigned/weightless vertices.
 
-<b>Tested:</b>
-1) Export static geometry (support box, sphere, capsule, cylinder and mesh collision types). (see example)
-2) Export usual and custom normal shading for objects. (see example)
-3) Export skeleton(chr), skeleton radgoll settings, skin.
-4) Export Animated Mesh (CGA) with single or multiple animations. (see example)
-5) Export branch for touch vegetation. (see example)
-6) Export animation through Limit with Values.
-7) All other utilities (Export, configuration, bone utilities, mesh utilities, material utilities, UDP).
+## Installation
+1. Download the repository folder as a `.zip` archive.
+2. In Blender, go to `Edit > Preferences > Add-ons > Install...`.
+3. Select the downloaded `.zip` file and enable **Import-Export: BCRY Exporter**.
 
-<b>Not tested but must work:</b>
-1) Export breakable joint
+## Configuration
+Before exporting, configure the paths in the Sidebar panel (**BCry Exporter** tab):
+1. **Find RC**: Locate your CryEngine Resource Compiler (`rc.exe`).
+2. **Select Game Directory**: Define your target project's asset root directory (needed to build relative texture paths).
 
-<b>What's new:</b>
-1) Now you can add collision object to selected objects (not only for active)
-2) Add "Mesh collision" (Recommended use less than 256 vertices and convex hull shape, but concave support too)
-3) Blender 2.80 has new type of grouping objects instead layer and group - Collection. Now when you create export node, BCRY exporter create cry_exporter_nodes collection. All export nodes inside this collection are exported when you call export.
-
-<b>Menu</b>: Blender 2.80 has Quick Favorite menu which called by "Q" key. But there is not way to add to quick favorite from python code. I added this menu in Configuration section. You can do right mouse click on them and set "Add to Quick favorite".
-
-<b>About Mesh collision</b>: Now when you click to create Mesh button (in Cry Utilities):
-
-In Object Mode:
-1) Will be create the same mesh with wire display type. You can use separate checkbox in advanced options menu to separate new mesh into loose parts. (Multiple selected objects support)
-
-In Edit mode:
-1) Blender now supports multiedit by core. You can select many objects and change mode to EDIT. Then you can select through link (key 'L') a part of this mesh and click Mesh button to separate selected part as a mesh collision. Multiple selected meshes supports too. The current mode state will be save. The objects without selected vertices will be ignored.
-
-<b>Known issues/limitation:</b>
-1) Custom split normal doesn't support Sharp edges in skin node. <br> <b>Solution:</b> Add Edge split modifier before Armature modifier, set up and apply. The skin mesh will be rip in Sharp edges places.
-2) There is no way to set active any collection, so be careful that current active collection be unhide and not disable. Otherwise you can expect Error that Object is Null. I put in some operators code which set Master collection(Scene Collection) active.
-3) In some cases when you modify the armature as add bones through edit_bones.new() method or other way BCRYExporter will be export armature with broken bones hierarchy. I think that is Blender bug because I nothing changed in export code except fix errors with Bmesh convertation. <br> <b>Solution:</b> I added a button in Bone utilities: Rebuild-armature. It rebuild selected armature from zero and copy all bones parameters: name, matrix, roll, parent, some properties and custom properties then delete old bones. It don't copy bone constraints at the moment.<br> <b>IMPORTANT:</b> vertex groups renames too, but only if the object is a children of this armature. Do skin object a child of armature before use this button.
-
-Enjoy.
+## License
+This project is licensed under the GPLv2+ License.
