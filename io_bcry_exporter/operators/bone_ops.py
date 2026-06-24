@@ -549,13 +549,13 @@ class BCRY_OT_add_primitive_mesh(bpy.types.Operator):
         else:
             material_ = bpy.data.materials.new(mat_name)
 
-        if triangle.material_slots:
-            triangle.material_slots[0].material = material_
+        # Direct and safe material assignment without using context-sensitive operators
+        if len(triangle.data.materials) == 0:
+            triangle.data.materials.append(material_)
         else:
-            bpy.ops.object.material_slot_add()
-            if triangle.material_slots:
-                triangle.material_slots[0].material = material_
+            triangle.data.materials[0] = material_
 
+        # Safely unlinks No_Draw triangle and handles view layer assignment fallback
         if len(triangle.users_collection) > 0:
             for c in list(triangle.users_collection):
                 c.objects.unlink(triangle)
@@ -567,6 +567,8 @@ class BCRY_OT_add_primitive_mesh(bpy.types.Operator):
                 linked = True
                 break
 
+        # Fallback: if the skeleton resides strictly inside CryExportNodes,
+        # link to the first collection anyway to prevent view layer orphan errors
         if not linked:
             if len(armature.users_collection) > 0:
                 armature.users_collection[0].objects.link(triangle)
@@ -711,7 +713,9 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
         collection = utils.get_chr_node_from_skeleton(armature)
         self.__create_materials(armature, materials)
         armature.data.pose_position = "REST"
-        bpy.ops.object.mode_set(mode="EDIT")
+
+        # Set viewport mode to OBJECT to ensure safe material block creation
+        bpy.ops.object.mode_set(mode="OBJECT")
 
         for p_bone in armature.pose.bones:
             # Updated bone selection property mapping for Blender 5.0+
@@ -785,12 +789,12 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
                         mat = materials[utils.get_bone_material_type(p_bone, bone_type)]
 
                     mat.alpha_threshold = self.physic_alpha
-                    if object_.material_slots:
-                        object_.material_slots[0].material = mat
+
+                    # Direct and safe material assignment without using context-sensitive operators
+                    if len(object_.data.materials) == 0:
+                        object_.data.materials.append(mat)
                     else:
-                        bpy.ops.object.material_slot_add()
-                        if object_.material_slots:
-                            object_.material_slots[0].material = mat
+                        object_.data.materials[0] = mat
 
                     if not object_.data.uv_layers:
                         object_.data.uv_layers.new()
@@ -861,6 +865,9 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
 
         armature.select_set(True)
         context.view_layer.objects.active = armature
+
+        # Restore viewport back to original POSE mode
+        bpy.ops.object.mode_set(mode="POSE")
         armature.data.pose_position = "POSE"
 
         return {"FINISHED"}
