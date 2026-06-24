@@ -5,8 +5,9 @@
 
 import math
 import bpy
+import bmesh
 import mathutils
-from bpy.props import BoolProperty, FloatProperty, IntProperty
+from bpy.props import BoolProperty, FloatProperty, IntProperty, EnumProperty
 from bpy_extras import view3d_utils
 
 # Modular package imports
@@ -64,7 +65,7 @@ class BCRY_OT_feet_on_floor(bpy.types.Operator):
         old_cursor = context.scene.cursor.location.copy()
         for obj in context.selected_objects:
             ctx = utils.override(obj, active=True, selected=True)
-            # Uses standard context.temp_override context manager for Blender 4.x
+            # Uses standard context.temp_override context manager for Blender 4.x/5.x
             with context.temp_override(**ctx):
                 bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
                 bpy.ops.view3d.snap_cursor_to_selected()
@@ -407,6 +408,7 @@ class BCRY_OT_remove_unused_vertex_groups(bpy.types.Operator):
             bpy.ops.object.mode_set(mode="OBJECT")
 
         object_ = bpy.context.active_object
+
         used_indices = []
 
         for vertex in object_.data.vertices:
@@ -435,15 +437,23 @@ class BCRY_OT_remove_unused_vertex_groups(bpy.types.Operator):
 
 
 class BCRY_OT_create_decal(bpy.types.Operator):
-    """Project the active detail mesh onto the selected target surface to create a decal"""
+    """Project and clip the active projector volume onto the selected target surface to create a geometrically clean mesh decal"""
 
     bl_label = "Create Decal"
     bl_idname = "bcry.create_decal"
     bl_options = {"REGISTER", "UNDO"}
 
+    projection_anglecutoff: bpy.props.FloatProperty(
+        name="Angle Cutoff",
+        description="Discard faces slanted beyond this angle (in degrees)",
+        default=90.0,
+        min=0.0,
+        max=90.0,
+    )
+
     push_offset: bpy.props.FloatProperty(
         name="Push Offset",
-        description="Subtle offset distance to prevent Z-fighting",
+        description="Distance to displace the decal mesh along its normals to prevent Z-fighting",
         default=0.002,
         min=0.0001,
         max=0.1,
@@ -451,72 +461,111 @@ class BCRY_OT_create_decal(bpy.types.Operator):
         precision=4,
     )
 
-    def execute(self, context):
-        active_obj = context.active_object
-        selected_objs = [obj for obj in context.selected_objects if obj != active_obj]
+    material_index: bpy.props.IntProperty(
+        name="Material ID",
+        description="Material slot index (Material ID) to assign to the decal's faces",
+        default=1,
+        min=1,
+        max=65535,
+    )
 
-        if not active_obj or active_obj.type != "MESH":
-            self.report({"ERROR"}, "Active object must be a Decal mesh.")
+    def execute(self, context):
+        projector = context.active_object
+        selected_objs = [obj for obj in context.selected_objects if obj != projector]
+
+        if not projector or projector.type != "MESH":
+            self.report({"ERROR"}, "Active object must be a Mesh projector box (cube).")
             return {"CANCELLED"}
 
         if not selected_objs or selected_objs[0].type != "MESH":
             self.report(
                 {"ERROR"},
-                "Select the target surface mesh object first, then select your Decal mesh.",
+                "Select the target surface mesh object first, then select your projector box.",
             )
             return {"CANCELLED"}
 
         target_obj = selected_objs[0]
 
-        # Add Shrinkwrap modifier to active decal object
-        shrink_mod = active_obj.modifiers.new(
-            name="BCRY_Decal_Project", type="SHRINKWRAP"
-        )
-        shrink_mod.target = target_obj
-        shrink_mod.wrap_method = "PROJECT"
-        shrink_mod.wrap_mode = "ON_SURFACE"
+        # 1. Duplicate the target object to isolate the decal geometry
+        bpy.ops.object.select_all(action="DESELECT")
+        target_obj.select_set(True)
+        context.view_layer.objects.active = target_obj
+        bpy.ops.object.duplicate()
+        decal_obj = context.active_object
+        decal_obj.name = f"Decal_{target_obj.name}"
 
-        # Project along negative local Z axis of the decal
-        shrink_mod.project_limit = 10.0
-        shrink_mod.use_project_z = True
-        shrink_mod.use_negative_direction = True
-        shrink_mod.offset = self.push_offset
+        # 2. Add and apply Boolean INTERSECT modifier with the projector cube
+        bool_mod = decal_obj.modifiers.new(name="BCRY_Decal_Cut", type="BOOLEAN")
+        bool_mod.operation = "INTERSECT"
+        bool_mod.object = projector
+        bool_mod.solver = "EXACT"
 
-        # Apply modifier to freeze mesh coordinates for export
-        bpy.ops.object.modifier_apply(modifier=shrink_mod.name)
+        context_override = {"object": decal_obj}
+        with context.temp_override(**context_override):
+            bpy.ops.object.modifier_apply(modifier=bool_mod.name)
 
-        # Auto-assign physical material so it doesn't block player (decal should not have collision)
-        decal_mat = None
-        mat_name = f"{active_obj.name}__physNone"
+        # 3. Discard steep angle cutoff faces
+        import math
 
-        for mat in bpy.data.materials:
-            if mat.name.startswith(active_obj.name) and mat.name.endswith("__physNone"):
-                decal_mat = mat
-                break
+        # Compute local Z vector of the projector in world space
+        proj_z_world = projector.matrix_world.to_3x3() @ mathutils.Vector((0, 0, 1))
+        proj_z_world.normalize()
 
-        if not decal_mat:
-            decal_mat = bpy.data.materials.new(name=mat_name)
-            decal_mat.diffuse_color = (1.0, 1.0, 1.0, 1.0)
+        cos_cutoff = math.cos(math.radians(self.projection_anglecutoff))
 
-        if active_obj.material_slots:
-            active_obj.material_slots[0].material = decal_mat
-        else:
-            active_obj.data.materials.append(decal_mat)
+        bm = bmesh.new()
+        bm.from_mesh(decal_obj.data)
 
-        # Link decal mesh into target's export collection
-        target_collections = target_obj.users_collection
-        for col in target_collections:
-            if utils.is_export_node(col):
-                if active_obj.name not in col.objects:
-                    col.objects.link(active_obj)
-                for other_col in list(active_obj.users_collection):
-                    if other_col != col:
-                        other_col.objects.unlink(active_obj)
-                break
+        decal_world_3x3 = decal_obj.matrix_world.to_3x3()
+
+        faces_to_delete = []
+        for face in bm.faces:
+            face_normal_world = (decal_world_3x3 @ face.normal).normalized()
+            # Measure angle between face normal and local projector Z direction
+            dot_val = face_normal_world.dot(proj_z_world)
+            # If pointing too far away/steep relative to projection direction
+            if dot_val < cos_cutoff:
+                faces_to_delete.append(face)
+
+        bmesh.ops.delete(bm, geom=faces_to_delete, context="FACES")
+        bm.to_mesh(decal_obj.data)
+        bm.free()
+        decal_obj.data.update()
+
+        # 4. Push vertices along normals slightly to prevent Z-fighting
+        displace_mod = decal_obj.modifiers.new(name="BCRY_Push", type="DISPLACE")
+        displace_mod.strength = self.push_offset
+        displace_mod.direction = "NORMAL"
+
+        with context.temp_override(**context_override):
+            bpy.ops.object.modifier_apply(modifier=displace_mod.name)
+
+        # 5. Set Material ID
+        decal_obj.data.materials.clear()
+        for mat in target_obj.data.materials:
+            decal_obj.data.materials.append(mat)
+
+        if decal_obj.data.materials:
+            mat_idx = max(
+                0, min(self.material_index - 1, len(decal_obj.data.materials) - 1)
+            )
+            for face in decal_obj.data.polygons:
+                face.material_index = mat_idx
+
+        # 6. Parent and clean up selections
+        decal_obj.parent = target_obj
+        decal_obj.matrix_parent_inverse = target_obj.matrix_world.inverted()
+
+        # Hide projector in viewport and render, select the new decal
+        projector.hide_viewport = True
+        projector.hide_render = True
+        bpy.ops.object.select_all(action="DESELECT")
+        decal_obj.select_set(True)
+        context.view_layer.objects.active = decal_obj
 
         self.report(
             {"INFO"},
-            f"Decal '{active_obj.name}' successfully projected onto '{target_obj.name}'.",
+            f"Decal '{decal_obj.name}' created, displaced by {self.push_offset}m, projector hidden.",
         )
         return {"FINISHED"}
 
@@ -558,6 +607,7 @@ class BCRY_OT_flow_paint(bpy.types.Operator):
         elif event.type in {"RIGHTMOUSE", "ESC"}:
             bpy.ops.object.mode_set(mode=self.prev_mode)
 
+            # Clean up computed tangents upon tool exit to free system resources
             if self.obj and self.obj.data:
                 try:
                     self.obj.data.free_tangents()
@@ -577,11 +627,14 @@ class BCRY_OT_flow_paint(bpy.types.Operator):
         self.obj = context.active_object
         self.prev_mode = self.obj.mode
 
+        # Safely exit Edit mode to process coordinates
         bpy.ops.object.mode_set(mode="OBJECT")
 
         mesh = self.obj.data
 
+        # Use a strict name to avoid accidental overrides on system properties
         layer_name = "Col"
+
         if hasattr(mesh, "color_attributes"):
             if layer_name not in mesh.color_attributes:
                 mesh.color_attributes.new(
@@ -596,6 +649,7 @@ class BCRY_OT_flow_paint(bpy.types.Operator):
         self.painting = False
         self.last_hit = None
 
+        # Precompute tangents only once on tool invocation to prevent viewport geometry glitches
         try:
             mesh.calc_tangents()
         except Exception as e:
@@ -639,12 +693,14 @@ class BCRY_OT_flow_paint(bpy.types.Operator):
 
             mesh = self.obj.data
 
+            # Retrieve the target color layer strictly by name
             color_layer = None
             if hasattr(mesh, "color_attributes"):
                 color_layer = mesh.color_attributes.get(self.color_layer_name)
             elif hasattr(mesh, "attributes"):
                 color_layer = mesh.attributes.get(self.color_layer_name)
 
+            # Protection check: never paint on default geometry attributes
             if not color_layer or color_layer.name in (
                 "position",
                 "normal",
@@ -653,9 +709,13 @@ class BCRY_OT_flow_paint(bpy.types.Operator):
                 return
 
             domain = color_layer.domain
+
             brush_radius_local = self.brush_size / self.obj.matrix_world.to_scale().x
+
+            # Precalculate matrix for loop speed
             mat_3x3 = self.obj.matrix_world.to_3x3()
 
+            # Direct polygon iteration (no BMesh — incredibly fast)
             for poly in mesh.polygons:
                 for loop_idx in poly.loop_indices:
                     loop = mesh.loops[loop_idx]
@@ -681,41 +741,38 @@ class BCRY_OT_flow_paint(bpy.types.Operator):
                             g = (dy + 1.0) / 2.0
                             b = 0.5
 
+                            # Select the correct target index based on the attribute's domain
                             if domain == "POINT":
                                 attr_idx = vert_idx
                             elif domain == "CORNER":
                                 attr_idx = loop_idx
+                            elif domain == "FACE":
+                                attr_idx = poly.index
                             else:
                                 continue
 
                             attr_data = color_layer.data[attr_idx]
 
+                            # Safely handle Blender's varying attribute data types (color vs vector)
                             if hasattr(attr_data, "color"):
-                                c = attr_data.color
-                                c_len = len(c)
-
-                                c_r = c[0] if c_len > 0 else 0.0
-                                c_g = c[1] if c_len > 1 else 0.0
-                                c_b = c[2] if c_len > 2 else 0.0
-                                c_a = c[3] if c_len > 3 else 1.0
-
+                                current_color = attr_data.color
                                 attr_data.color = (
-                                    c_r * (1.0 - self.brush_strength)
+                                    current_color[0] * (1.0 - self.brush_strength)
                                     + r * self.brush_strength,
-                                    c_g * (1.0 - self.brush_strength)
+                                    current_color[1] * (1.0 - self.brush_strength)
                                     + g * self.brush_strength,
-                                    c_b * (1.0 - self.brush_strength)
+                                    current_color[2] * (1.0 - self.brush_strength)
                                     + b * self.brush_strength,
-                                    c_a,
+                                    1.0,
                                 )
                             elif hasattr(attr_data, "vector"):
-                                c = attr_data.vector
-                                c_len = len(c)
+                                current_color = attr_data.vector
+                                c_len = len(current_color)
 
-                                c_r = c[0] if c_len > 0 else 0.0
-                                c_g = c[1] if c_len > 1 else 0.0
-                                c_b = c[2] if c_len > 2 else 0.0
-                                c_a = c[3] if c_len > 3 else 1.0
+                                c_r = current_color[0] if c_len > 0 else 0.0
+                                c_g = current_color[1] if c_len > 1 else 0.0
+                                c_b = current_color[2] if c_len > 2 else 0.0
+                                c_a = current_color[3] if c_len > 3 else 1.0
 
                                 new_r = (
                                     c_r * (1.0 - self.brush_strength)
@@ -730,6 +787,7 @@ class BCRY_OT_flow_paint(bpy.types.Operator):
                                     + b * self.brush_strength
                                 )
 
+                                # Re-assign vectors of correct length matching original formatting
                                 if c_len >= 4:
                                     attr_data.vector = (new_r, new_g, new_b, c_a)
                                 elif c_len == 3:
@@ -738,8 +796,88 @@ class BCRY_OT_flow_paint(bpy.types.Operator):
                                     attr_data.vector = (new_r, new_g)
                                 elif c_len == 1:
                                     attr_data.vector = (new_r,)
+                            elif hasattr(attr_data, "value"):
+                                # Fallback for 1D float attribute layers
+                                c_v = attr_data.value
+                                attr_data.value = (
+                                    c_v * (1.0 - self.brush_strength)
+                                    + r * self.brush_strength
+                                )
 
+            # Sync changes with the GPU for viewport display
             mesh.update()
+
+
+class BCRY_OT_bake_abnormals(bpy.types.Operator):
+    """Assign selected faces to a Crytek Abnormal Group (hard-surface normals)"""
+
+    bl_label = "Assign Abnormal Group"
+    bl_idname = "bcry.assign_abnormal_group"
+    bl_options = {"REGISTER", "UNDO"}
+
+    group_type: EnumProperty(
+        name="Abnormal Group",
+        items=(
+            ("1", "Group 1 (Value: 0.1)", "First hard-surface smoothing group"),
+            ("2", "Group 2 (Value: 0.2)", "Second hard-surface smoothing group"),
+            ("3", "Group 3 (Value: 0.3)", "Third hard-surface smoothing group"),
+            ("4", "Group 4 (Value: 1.0 - Clear)", "Default / Cleared smoothing group"),
+        ),
+        default="4",
+    )
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != "MESH":
+            self.report({"ERROR"}, "Please select a mesh object.")
+            return {"CANCELLED"}
+
+        original_mode = obj.mode
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        mesh = obj.data
+        layer_name = "Abnormals"
+
+        # Find or create the custom Abnormals color attribute
+        color_layer = mesh.color_attributes.get(layer_name)
+        if not color_layer:
+            color_layer = mesh.color_attributes.new(
+                name=layer_name, type="BYTE_COLOR", domain="CORNER"
+            )
+
+        val = 1.0
+        if self.group_type == "1":
+            val = 0.1
+        elif self.group_type == "2":
+            val = 0.2
+        elif self.group_type == "3":
+            val = 0.3
+
+        color_val = (val, val, val, 1.0)
+
+        # Update the colors of all selected faces
+        faces_updated = 0
+        for poly in mesh.polygons:
+            if poly.select:
+                for loop_idx in poly.loop_indices:
+                    color_layer.data[loop_idx].color = color_val
+                faces_updated += 1
+
+        mesh.update()
+        bpy.ops.object.mode_set(mode=original_mode)
+
+        if faces_updated > 0:
+            self.report(
+                {"INFO"},
+                f"Assigned {faces_updated} faces to Abnormal Group {self.group_type} ({val}).",
+            )
+        else:
+            self.report(
+                {"WARNING"},
+                "No selected faces found. Please select faces in Edit Mode first.",
+            )
+
+        return {"FINISHED"}
 
 
 # Expose classes to operators/__init__.py dynamically
@@ -756,4 +894,5 @@ classes = (
     BCRY_OT_remove_unused_vertex_groups,
     BCRY_OT_create_decal,
     BCRY_OT_flow_paint,
+    BCRY_OT_bake_abnormals,
 )

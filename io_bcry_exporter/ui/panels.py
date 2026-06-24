@@ -210,13 +210,11 @@ class BCRY_PT_mesh_utilities_panel(View3DPanel, bpy.types.Panel):
         col = layout.column(align=True)
 
         col.operator(
-            "bcry.generate_lod_meshes",
-            text="Generate LODs",
-            icon="MOD_EXPLODE",
+            "bcry.generate_lod_meshes", text="Generate LODs", icon="MOD_EXPLODE"
         )
-        col.separator()
 
         col.separator()
+
         col.operator("bcry.find_weightless", text="Find Weightless", icon="WPAINT_HLT")
         col.operator("bcry.remove_weight", text="Remove Weight", icon="WPAINT_HLT")
 
@@ -249,9 +247,16 @@ class BCRY_PT_mesh_utilities_panel(View3DPanel, bpy.types.Panel):
         col.separator()
         col.label(text="Cry Decal & Flow Tools:", icon="BRUSH_DATA")
         col.operator(
-            "bcry.create_decal", text="Create Decal (Project)", icon="MOD_SHRINKWRAP"
+            "bcry.create_decal",
+            text="Create Decal (Geom Project)",
+            icon="MOD_SHRINKWRAP",
         )
         col.operator("bcry.flow_paint", text="Flow Paint Tool", icon="BRUSH_DATA")
+        col.operator(
+            "bcry.assign_abnormal_group",
+            text="Bake Abnormal Groups",
+            icon="MOD_NORMALEDIT",
+        )
 
 
 class BCRY_PT_material_utilities_panel(View3DPanel, bpy.types.Panel):
