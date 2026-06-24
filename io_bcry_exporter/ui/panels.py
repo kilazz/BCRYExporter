@@ -196,6 +196,13 @@ class BCRY_PT_bone_utilities_panel(View3DPanel, bpy.types.Panel):
 
         row = col.row()
         row.operator(
+            "bcry.prepare_biped_skeleton",
+            text="Prepare Biped Skeleton",
+            icon="ARMATURE_DATA",
+        )
+
+        row = col.row()
+        row.operator(
             "bcry.rebuild_armature",
             text="Rebuild armature",
             icon="OUTLINER_DATA_ARMATURE",
@@ -244,6 +251,7 @@ class BCRY_PT_mesh_utilities_panel(View3DPanel, bpy.types.Panel):
             icon="UV_FACESEL",
         )
 
+        # Section with decal and flow map tools
         col.separator()
         col.label(text="Cry Decal & Flow Tools:", icon="BRUSH_DATA")
         col.operator(

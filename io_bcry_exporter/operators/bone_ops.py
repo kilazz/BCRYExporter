@@ -1133,6 +1133,119 @@ class BCRY_OT_fix_bone_orientations(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class BCRY_OT_prepare_biped_skeleton(bpy.types.Operator):
+    """Parent mesh and correct bone names to double underscores for legacy Crysis/CryEngine skeletons"""
+
+    bl_label = "Prepare Biped Skeleton"
+    bl_idname = "bcry.prepare_biped_skeleton"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def get_corrected_bone_name(self, old_name):
+        # Only process Biped bones starting with Bip01
+        if not (old_name.startswith("Bip01_") or old_name.startswith("Bip01__")):
+            return old_name
+
+        # Check if it is a CryEngine custom IK helper bone
+        ik_suffixes = ["Hand2PistolPos", "Hand2Pocket", "Hand2RiflePos", "Hand2Weapon"]
+        ik_types = ["IKBlend", "IKTarget"]
+
+        is_ik = False
+        matched_suffix = ""
+        matched_type = ""
+        for suffix in ik_suffixes:
+            if suffix in old_name:
+                for ik_type in ik_types:
+                    if ik_type in old_name:
+                        is_ik = True
+                        matched_suffix = suffix
+                        matched_type = ik_type
+                        break
+                if is_ik:
+                    break
+
+        if is_ik:
+            # Correct combined format for Crysis 2 IK bones: Bip01__<L/R>Hand2<Type>_<IK_Suffix>
+            side = "L" if f"L{matched_suffix}" in old_name else "R"
+            return f"Bip01__{side}{matched_suffix}_{matched_type}"
+        else:
+            # Standard biped body bones must use double underscores (e.g. Bip01__Pelvis)
+            normalized = old_name.replace("__", "_")
+            parts = normalized.split("_")
+            return "__".join(parts)
+
+    def execute(self, context):
+        obj = context.active_object
+
+        # If no active object is selected, automatically find the first armature in the scene
+        if not obj or obj.type != "ARMATURE":
+            for item in context.scene.objects:
+                if item.type == "ARMATURE":
+                    obj = item
+                    context.view_layer.objects.active = obj
+                    obj.select_set(True)
+                    break
+
+        if not obj or obj.type != "ARMATURE":
+            self.report(
+                {"ERROR"}, "Please select your Armature (Skeleton) object first!"
+            )
+            return {"CANCELLED"}
+
+        bcPrint(f"Targeting Armature for cleanup: {obj.name}")
+
+        # 1. FIX HIERARCHY (Parent Skinned Mesh to Armature)
+        mesh_obj = None
+        for col in obj.users_collection:
+            for item in col.objects:
+                if item.type == "MESH" and not item.name.endswith("_boneGeometry"):
+                    mesh_obj = item
+                    break
+            if mesh_obj:
+                break
+
+        if mesh_obj:
+            mesh_obj.parent = None
+            mesh_obj.parent = obj
+            mesh_obj.parent_type = "ARMATURE"
+
+            armature_mod = None
+            for mod in mesh_obj.modifiers:
+                if mod.type == "ARMATURE":
+                    armature_mod = mod
+                    break
+            if not armature_mod:
+                armature_mod = mesh_obj.modifiers.new(name="Armature", type="ARMATURE")
+
+            armature_mod.object = obj
+            bcPrint(
+                f"Hierarchy Fixed: Parented Mesh '{mesh_obj.name}' to Skeleton '{obj.name}'."
+            )
+        else:
+            bcPrint(
+                "WARNING: No Mesh found in the Armature's collection to parent.",
+                "warning",
+            )
+
+        # 2. FIX BONE NAMING
+        bpy.ops.object.mode_set(mode="EDIT")
+
+        renamed_count = 0
+        for bone in obj.data.edit_bones:
+            old_name = bone.name
+            new_name = self.get_corrected_bone_name(old_name)
+            if old_name != new_name:
+                bone.name = new_name
+                renamed_count += 1
+
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        self.report(
+            {"INFO"},
+            f"Skeletal cleanup complete! Parented mesh, renamed {renamed_count} bones.",
+        )
+        return {"FINISHED"}
+
+
 # Expose classes to operators/__init__.py dynamically
 classes = (
     BCRY_OT_edit_inverse_kinematics,
@@ -1144,4 +1257,5 @@ classes = (
     BCRY_OT_clear_skeleton_physics,
     BCRY_OT_rebuild_armature,
     BCRY_OT_fix_bone_orientations,
+    BCRY_OT_prepare_biped_skeleton,
 )
