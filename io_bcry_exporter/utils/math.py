@@ -121,3 +121,44 @@ def get_bounding_box(object_):
         vmax = Vector([box[6][0], box[6][1], box[6][2]])
 
     return vmin[0], vmin[1], vmin[2], vmax[0], vmax[1], vmax[2]
+
+
+def calc_optimal_bone_radius(bone_head_ws, bone_tail_ws, verts_ws):
+    """Calculates the optimal proxy radius for a bone based on its weighted vertex cluster.
+
+    Uses the perpendicular distance of the bone vector to each assigned vertex,
+    sorting and taking the 85th percentile to automatically exclude outliers
+    or geometric spikes.
+
+    Args:
+        bone_head_ws (Vector): World space coordinates of the bone head.
+        bone_tail_ws (Vector): World space coordinates of the bone tail.
+        verts_ws (list of Vector): Vertices weighted to this bone in world space.
+
+    Returns:
+        float: Optimal radius for the physical collision proxy.
+    """
+    if not verts_ws:
+        return 0.0
+
+    bone_vec = bone_tail_ws - bone_head_ws
+    bone_len_sq = bone_vec.length_squared
+
+    if bone_len_sq < 0.0001:
+        distances = [(v - bone_head_ws).length for v in verts_ws]
+    else:
+        distances = []
+        for v in verts_ws:
+            ap = v - bone_head_ws
+            t = ap.dot(bone_vec) / bone_len_sq
+            t = max(0.0, min(1.0, t))
+            closest_point = bone_head_ws + t * bone_vec
+            distances.append((v - closest_point).length)
+
+    if not distances:
+        return 0.0
+
+    distances.sort()
+    # 85th percentile handles edge geometry spikes smoothly without ballooning the collision volume
+    idx = int(len(distances) * 0.85)
+    return distances[idx]

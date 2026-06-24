@@ -6,6 +6,7 @@
 import math
 import bpy
 import bmesh
+import mathutils
 from bpy.props import (
     BoolProperty,
     BoolVectorProperty,
@@ -96,9 +97,8 @@ class BCRY_OT_edit_inverse_kinematics(bpy.types.Operator):
             self.report({"ERROR"}, "Please select a bone in POSE mode!")
             return {"CANCELLED"}
 
-        if context.active_pose_bone:
-            self.bone = context.active_pose_bone
-        else:
+        self.bone = context.active_pose_bone
+        if not self.bone:
             self.report({"ERROR"}, "Please select a bone in POSE mode!")
             return {"CANCELLED"}
 
@@ -128,8 +128,8 @@ class BCRY_OT_edit_inverse_kinematics(bpy.types.Operator):
 
     def execute(self, context):
         if self.bone is None:
-            bcPrint("Please select a bone in pose mode!")
-            return {"FINISHED"}
+            self.report({"ERROR"}, "No active bone selected.")
+            return {"CANCELLED"}
 
         self.bone["phys_proxy"] = self.proxy_type
 
@@ -153,7 +153,7 @@ class BCRY_OT_edit_inverse_kinematics(bpy.types.Operator):
 
 
 class BCRY_OT_apply_animation_scale(bpy.types.Operator):
-    """Select to apply animation skeleton scaling and rotation."""
+    """Select to apply animation skeleton scaling and rotation"""
 
     bl_label = "Apply Animation Scaling"
     bl_idname = "bcry.apply_animation_scaling"
@@ -248,7 +248,6 @@ class BCRY_OT_add_root_bone(bpy.types.Operator):
         root_bone.select_head = True
         root_bone.select_tail = True
 
-        # Supports Blender 4.x Bone Collections instead of legacy bone layers
         rootCollectionIndex = -1
         rootCollectionName = "bcry_root"
         for index in range(0, len(root_bone.collections)):
@@ -285,7 +284,9 @@ class BCRY_OT_add_root_bone(bpy.types.Operator):
 
         bpy.ops.object.mode_set(mode="POSE")
         root_pose_bone = armature.pose.bones[self.root_name]
-        root_pose_bone.bone.select = True
+
+        # Updated bone selection property mapping for Blender 5.0+
+        root_pose_bone.select = True
         armature.data.bones.active = root_pose_bone.bone
 
         bpy.ops.object.mode_set(mode="OBJECT")
@@ -395,7 +396,6 @@ class BCRY_OT_add_locator_locomotion(bpy.types.Operator):
         locator_bone.select_head = True
         locator_bone.select_tail = True
 
-        # Assigns using standard 4.x Bone Collections instead of legacy bone layers
         rootCollectionIndex = -1
         rootCollectionName = "bcry_root"
         for index in range(0, len(locator_bone.collections)):
@@ -433,7 +433,9 @@ class BCRY_OT_add_locator_locomotion(bpy.types.Operator):
 
         bpy.ops.object.mode_set(mode="POSE")
         locator_pose_bone = armature.pose.bones["Locator_Locomotion"]
-        locator_pose_bone.bone.select = True
+
+        # Updated bone selection property mapping for Blender 5.0+
+        locator_pose_bone.select = True
         armature.data.bones.active = locator_pose_bone.bone
 
         locator_pose_bone.constraints.new(type="COPY_LOCATION")
@@ -558,21 +560,44 @@ class BCRY_OT_add_primitive_mesh(bpy.types.Operator):
             for c in list(triangle.users_collection):
                 c.objects.unlink(triangle)
 
+        linked = False
         for c in armature.users_collection:
             if not utils.is_export_node(c):
                 c.objects.link(triangle)
+                linked = True
                 break
+
+        if not linked:
+            if len(armature.users_collection) > 0:
+                armature.users_collection[0].objects.link(triangle)
+            else:
+                context.view_layer.active_layer_collection.collection.objects.link(
+                    triangle
+                )
 
         utils.set_active(triangle)
         return {"FINISHED"}
 
 
 class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
-    """Create physic skeleton and physical proxies for bones."""
+    """Create smart physical skeleton and proxies based on mesh vertex weights."""
 
-    bl_label = "Physicalize Skeleton"
+    bl_label = "Smart Physicalize Skeleton"
     bl_idname = "bcry.physicalize_skeleton"
     bl_options = {"REGISTER", "UNDO"}
+
+    use_smart_radius: BoolProperty(
+        name="Smart Skin-Based Radius",
+        default=True,
+        description="Auto-calculate proxy thickness from mesh vertex weights.",
+    )
+    padding_factor: FloatProperty(
+        name="Thickness Padding",
+        default=1.1,
+        min=0.5,
+        max=2.0,
+        description="Multiplier for auto-calculated thickness.",
+    )
 
     physic_skeleton: BoolProperty(
         name="Physic Skeleton", default=True, description="Creates physic skeleton."
@@ -588,54 +613,13 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
     physic_ik_settings: BoolProperty(
         name="IK Settings", default=True, description="Fill IK settings to default."
     )
-    radius_torso: FloatProperty(
-        name="Torso Radius",
-        default=0.12,
-        min=0.01,
-        precision=3,
-        step=0.1,
-        description="Torso bones radius",
-    )
-    radius_head: FloatProperty(
-        name="Head Radius",
-        default=0.1,
-        min=0.01,
-        precision=3,
-        step=0.1,
-        description="Head bones radius",
-    )
-    radius_arm: FloatProperty(
-        name="Arm Radius",
-        default=0.04,
-        min=0.01,
-        precision=3,
-        step=0.1,
-        description="Arm bones radius",
-    )
-    radius_leg: FloatProperty(
-        name="Leg Radius",
-        default=0.05,
-        min=0.01,
-        precision=3,
-        step=0.1,
-        description="Leg bones radius",
-    )
-    radius_foot: FloatProperty(
-        name="Foot Radius",
-        default=0.05,
-        min=0.01,
-        precision=3,
-        step=0.1,
-        description="Foot bones radius",
-    )
-    radius_other: FloatProperty(
-        name="Other Radius",
-        default=0.05,
-        min=0.01,
-        precision=3,
-        step=0.1,
-        description="Other bones radius",
-    )
+    radius_torso: FloatProperty(name="Torso Radius", default=0.12, min=0.01)
+    radius_head: FloatProperty(name="Head Radius", default=0.1, min=0.01)
+    radius_arm: FloatProperty(name="Arm Radius", default=0.04, min=0.01)
+    radius_leg: FloatProperty(name="Leg Radius", default=0.05, min=0.01)
+    radius_foot: FloatProperty(name="Foot Radius", default=0.05, min=0.01)
+    radius_other: FloatProperty(name="Other Radius", default=0.05, min=0.01)
+
     physic_materials: BoolProperty(
         name="Create Physic Materials",
         default=True,
@@ -657,8 +641,8 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
 
     def invoke(self, context, event):
         armature = context.active_object
-        if armature.type != "ARMATURE":
-            self.report({"ERROR"}, "You have to select a armature object!")
+        if not armature or armature.type != "ARMATURE":
+            self.report({"ERROR"}, "Please select an Armature object!")
             return {"CANCELLED"}
         group = utils.get_chr_node_from_skeleton(armature)
         if not group:
@@ -672,29 +656,26 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
     def draw(self, context):
         layout = self.layout
         col = layout.column()
-        col.label(text="Physicalize Options:")
-        col.prop(self, "physic_skeleton")
-        col.prop(self, "physic_proxies")
-        col.prop(self, "physic_proxy_settings")
-        col.prop(self, "physic_ik_settings")
-        col.separator()
 
-        col.label(text="Physic Proxy Sizes:")
-        col.prop(self, "radius_torso")
-        col.prop(self, "radius_head")
-        col.prop(self, "radius_arm")
-        col.prop(self, "radius_leg")
-        col.prop(self, "radius_foot")
-        col.prop(self, "radius_other")
-        col.separator()
-        col.separator()
+        box = col.box()
+        box.label(text="Smart Generation:")
+        box.prop(self, "use_smart_radius")
+        if self.use_smart_radius:
+            box.prop(self, "padding_factor")
 
-        col.label(text="Physic Materials:")
+        box = col.box()
+        box.label(text="Fallback Sizes (Manual):")
+        box.prop(self, "radius_torso")
+        box.prop(self, "radius_head")
+        box.prop(self, "radius_arm")
+        box.prop(self, "radius_leg")
+        box.prop(self, "radius_foot")
+        box.prop(self, "radius_other")
+
+        col.separator()
         col.prop(self, "physic_materials")
         col.prop(self, "physic_alpha")
         col.prop(self, "use_single_material")
-        col.separator()
-        col.separator()
 
     def execute(self, context):
         x = context.view_layer.layer_collection
@@ -703,51 +684,91 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
         armature = context.active_object
         armature_collection = armature.users_collection[0]
         materials = {}
+
+        # Identify skinned mesh automatically to load vertex coordinates
+        skinned_mesh = utils.get_chr_object_from_skeleton(armature)
+        if self.use_smart_radius and not skinned_mesh:
+            self.report(
+                {"WARNING"}, "No skinned mesh found! Falling back to manual sizes."
+            )
+            self.use_smart_radius = False
+
+        bone_verts_ws = {}
+        if self.use_smart_radius:
+            bcPrint("Analyzing skin weights for smart physicalization...")
+            mesh_matrix = skinned_mesh.matrix_world
+            v_groups = skinned_mesh.vertex_groups
+
+            for v in skinned_mesh.data.vertices:
+                v_ws = mesh_matrix @ v.co
+                for g in v.groups:
+                    if g.weight > 0.15:
+                        vg_name = v_groups[g.group].name
+                        if vg_name not in bone_verts_ws:
+                            bone_verts_ws[vg_name] = []
+                        bone_verts_ws[vg_name].append(v_ws)
+
         collection = utils.get_chr_node_from_skeleton(armature)
         self.__create_materials(armature, materials)
         armature.data.pose_position = "REST"
         bpy.ops.object.mode_set(mode="EDIT")
 
-        for bone in armature.pose.bones:
-            if not bone.bone.select:
+        for p_bone in armature.pose.bones:
+            # Updated bone selection property mapping for Blender 5.0+
+            if not p_bone.select:
                 continue
 
             if self.physic_proxies:
-                name = f"{bone.name}_boneGeometry"
-                bone_radius = {
-                    "torso": self.radius_torso,
-                    "head": self.radius_head,
-                    "arm": self.radius_arm,
-                    "leg": self.radius_leg,
-                    "foot": self.radius_foot,
-                    "other": self.radius_other,
-                }
-                bone_type = utils.get_bone_type(bone)
-                rd = bone_radius[bone_type]
+                name = f"{p_bone.name}_boneGeometry"
+                bone_type = utils.get_bone_type(p_bone)
+                bone_name = p_bone.name
 
-                bpy.ops.mesh.primitive_cube_add(size=rd, location=(0, 0, 0))
-                object_ = context.active_object
-                object_.name = name
-                object_.data.name = name
+                radius = 0.0
+                if self.use_smart_radius and bone_name in bone_verts_ws:
+                    head_ws = armature.matrix_world @ p_bone.head
+                    tail_ws = armature.matrix_world @ p_bone.tail
+                    radius = utils.calc_optimal_bone_radius(
+                        head_ws, tail_ws, bone_verts_ws[bone_name]
+                    )
+                    radius *= self.padding_factor
 
-                bpy.ops.object.mode_set(mode="EDIT")
-                bm = bmesh.from_edit_mesh(object_.data)
-                scale_vector = (2.07, 2.07, 2.07)
+                if radius <= 0.001:
+                    radius = getattr(self, f"radius_{bone_type}", self.radius_other)
 
-                for face in bm.faces:
-                    if face.normal.x == -1.0:
-                        for vert in face.verts:
-                            vert.co.x = 0.0
-                    elif face.normal.x == 1.0:
-                        for vert in face.verts:
-                            vert.co.x = bone.length
-                        bmesh.ops.scale(bm, vec=scale_vector, verts=face.verts)
+                # Build geometry through BMesh dynamically
+                mesh_data = bpy.data.meshes.new(name)
+                object_ = bpy.data.objects.new(name, mesh_data)
+                collection.objects.link(object_)
 
-                bpy.ops.object.mode_set(mode="OBJECT")
-                object_.matrix_world = utils.transform_animation_matrix(bone.matrix)
+                bm = bmesh.new()
+                bone_len = max(p_bone.bone.length, 0.01)
+                is_box = bone_type in ("torso", "pelvis")
 
-                if collection:
-                    collection.objects.link(object_)
+                if is_box:
+                    bmesh.ops.create_cube(bm, size=1.0)
+                    bmesh.ops.scale(
+                        bm, vec=(radius * 2, bone_len, radius * 2), verts=bm.verts
+                    )
+                    bmesh.ops.translate(bm, vec=(0, bone_len / 2, 0), verts=bm.verts)
+                else:
+                    bmesh.ops.create_cone(
+                        bm,
+                        cap_ends=True,
+                        cap_tris=False,
+                        segments=12,
+                        radius1=radius,
+                        radius2=radius,
+                        depth=bone_len,
+                    )
+                    rot_mat = mathutils.Matrix.Rotation(math.radians(-90), 4, "X")
+                    trans_mat = mathutils.Matrix.Translation((0, bone_len / 2, 0))
+                    bmesh.ops.transform(bm, matrix=trans_mat @ rot_mat, verts=bm.verts)
+
+                bm.to_mesh(mesh_data)
+                bm.free()
+
+                # Align to local bone transformations
+                object_.matrix_world = armature.matrix_world @ p_bone.bone.matrix_local
 
                 for c in list(object_.users_collection):
                     if c != collection:
@@ -761,10 +782,9 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
                     if self.use_single_material:
                         mat = materials["single"]
                     else:
-                        mat = materials[utils.get_bone_material_type(bone, bone_type)]
+                        mat = materials[utils.get_bone_material_type(p_bone, bone_type)]
 
                     mat.alpha_threshold = self.physic_alpha
-                    # Fixed original typo where 'object_.material_slot' was called instead of material_slots
                     if object_.material_slots:
                         object_.material_slots[0].material = mat
                     else:
@@ -779,24 +799,30 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
 
                 if self.physic_proxy_settings:
                     if bone_type == "spine" or bone_type == "head":
-                        bone["phys_proxy"] = "sphere"
+                        p_bone["phys_proxy"] = "sphere"
                     elif (
                         bone_type == "arm" or bone_type == "leg" or bone_type == "foot"
                     ):
-                        bone["phys_proxy"] = "capsule"
+                        p_bone["phys_proxy"] = "capsule"
                     else:
-                        bone["phys_proxy"] = "capsule"
+                        p_bone["phys_proxy"] = "capsule"
 
-                    bone["Spring"] = (0.0, 0.0, 0.0)
-                    bone["Spring Tension"] = (1.0, 1.0, 1.0)
-                    bone["Damping"] = (1.0, 1.0, 1.0)
+                    p_bone["Spring"] = (0.0, 0.0, 0.0)
+                    p_bone["Spring Tension"] = (1.0, 1.0, 1.0)
+                    p_bone["Damping"] = (1.0, 1.0, 1.0)
 
                     hips_list = ["hips", "pelvis"]
-                    if utils.is_in_list(bone.name, hips_list):
-                        bone["Damping"] = (0.0, 0.0, 0.0)
+                    if utils.is_in_list(p_bone.name, hips_list):
+                        p_bone["Damping"] = (0.0, 0.0, 0.0)
 
                 if self.physic_ik_settings:
-                    self.__set_ik(bone)
+                    self.__set_ik(p_bone)
+
+                # Keep bone relationships parented in export pass
+                object_.parent = armature
+                object_.parent_type = "BONE"
+                object_.parent_bone = bone_name
+                object_.matrix_parent_inverse = p_bone.bone.matrix_local.inverted()
 
         if self.physic_skeleton:
             bpy.ops.object.mode_set(mode="OBJECT")
@@ -861,7 +887,6 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
     def __set_primitive_mesh_material(self, armature, materials):
         object_ = utils.get_chr_object_from_skeleton(armature)
         object_.select_set(True)
-        # Replaced undefined variable 'context' with 'bpy.context' to satisfy Ruff F821
         bpy.context.view_layer.objects.active = object_
         mat = None
         if self.use_single_material:
@@ -886,7 +911,7 @@ class BCRY_OT_physicalize_skeleton(bpy.types.Operator):
             else:
                 materials["single"] = bpy.data.materials.new(single_material_name)
 
-            materials["single"].diffuse_color = (0.016, 0.016, 0.016)
+            materials["single"].diffuse_color = (0.016, 0.016, 0.016, 0.5)
             return
 
         mat_names = {
@@ -1064,14 +1089,15 @@ class BCRY_OT_clear_skeleton_physics(bpy.types.Operator):
             for object_ in group.objects:
                 if utils.is_bone_geometry(object_):
                     object_.select_set(True)
-                    context.view_layer.objects.active = object_
+                    bpy.context.view_layer.objects.active = object_
             bpy.ops.object.delete()
 
         if self.physic_skeleton and (physic_name in bpy.data.objects):
             physic_armature = bpy.data.objects[physic_name]
+
             armature.select_set(False)
             physic_armature.select_set(True)
-            context.view_layer.objects.active = physic_armature
+            bpy.context.view_layer.objects.active = physic_armature
             bpy.ops.object.delete()
 
         return {"FINISHED"}
@@ -1080,7 +1106,7 @@ class BCRY_OT_clear_skeleton_physics(bpy.types.Operator):
 class BCRY_OT_rebuild_armature(bpy.types.Operator):
     """Rebuild armature to fix export errors."""
 
-    bl_label = "Rebuild Armature"
+    bl_label = "Rebuild armature"
     bl_idname = "bcry.rebuild_armature"
     bl_options = {"REGISTER", "UNDO"}
 
@@ -1100,7 +1126,6 @@ class BCRY_OT_fix_bone_orientations(bpy.types.Operator):
     def execute(self, context):
         armatures = [obj for obj in context.selected_objects if obj.type == "ARMATURE"]
 
-        # If nothing is selected explicitly but active object is an armature
         if not armatures:
             active_obj = context.active_object
             if active_obj and active_obj.type == "ARMATURE":
@@ -1115,7 +1140,6 @@ class BCRY_OT_fix_bone_orientations(bpy.types.Operator):
             bpy.ops.object.mode_set(mode="EDIT")
 
             for bone in obj.data.edit_bones:
-                # If the bone has children, align tail with the head of its first child
                 if bone.children:
                     child = bone.children[0]
                     dist = (child.head - bone.head).length
@@ -1124,7 +1148,6 @@ class BCRY_OT_fix_bone_orientations(bpy.types.Operator):
                     else:
                         bone.length = 0.05
                 else:
-                    # Default tiny length fallback for tip/leaf bones
                     bone.length = 0.05
 
             bpy.ops.object.mode_set(mode="OBJECT")
@@ -1141,11 +1164,9 @@ class BCRY_OT_prepare_biped_skeleton(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def get_corrected_bone_name(self, old_name):
-        # Only process Biped bones starting with Bip01
         if not (old_name.startswith("Bip01_") or old_name.startswith("Bip01__")):
             return old_name
 
-        # Check if it is a CryEngine custom IK helper bone
         ik_suffixes = ["Hand2PistolPos", "Hand2Pocket", "Hand2RiflePos", "Hand2Weapon"]
         ik_types = ["IKBlend", "IKTarget"]
 
@@ -1164,11 +1185,9 @@ class BCRY_OT_prepare_biped_skeleton(bpy.types.Operator):
                     break
 
         if is_ik:
-            # Correct combined format for Crysis 2 IK bones: Bip01__<L/R>Hand2<Type>_<IK_Suffix>
             side = "L" if f"L{matched_suffix}" in old_name else "R"
             return f"Bip01__{side}{matched_suffix}_{matched_type}"
         else:
-            # Standard biped body bones must use double underscores (e.g. Bip01__Pelvis)
             normalized = old_name.replace("__", "_")
             parts = normalized.split("_")
             return "__".join(parts)
@@ -1176,7 +1195,6 @@ class BCRY_OT_prepare_biped_skeleton(bpy.types.Operator):
     def execute(self, context):
         obj = context.active_object
 
-        # If no active object is selected, automatically find the first armature in the scene
         if not obj or obj.type != "ARMATURE":
             for item in context.scene.objects:
                 if item.type == "ARMATURE":
@@ -1193,7 +1211,6 @@ class BCRY_OT_prepare_biped_skeleton(bpy.types.Operator):
 
         bcPrint(f"Targeting Armature for cleanup: {obj.name}")
 
-        # 1. FIX HIERARCHY (Parent Skinned Mesh to Armature)
         mesh_obj = None
         for col in obj.users_collection:
             for item in col.objects:
@@ -1217,36 +1234,15 @@ class BCRY_OT_prepare_biped_skeleton(bpy.types.Operator):
                 armature_mod = mesh_obj.modifiers.new(name="Armature", type="ARMATURE")
 
             armature_mod.object = obj
-            bcPrint(
-                f"Hierarchy Fixed: Parented Mesh '{mesh_obj.name}' to Skeleton '{obj.name}'."
-            )
-        else:
-            bcPrint(
-                "WARNING: No Mesh found in the Armature's collection to parent.",
-                "warning",
-            )
 
-        # 2. FIX BONE NAMING
         bpy.ops.object.mode_set(mode="EDIT")
-
-        renamed_count = 0
         for bone in obj.data.edit_bones:
-            old_name = bone.name
-            new_name = self.get_corrected_bone_name(old_name)
-            if old_name != new_name:
-                bone.name = new_name
-                renamed_count += 1
-
+            bone.name = self.get_corrected_bone_name(bone.name)
         bpy.ops.object.mode_set(mode="OBJECT")
 
-        self.report(
-            {"INFO"},
-            f"Skeletal cleanup complete! Parented mesh, renamed {renamed_count} bones.",
-        )
         return {"FINISHED"}
 
 
-# Expose classes to operators/__init__.py dynamically
 classes = (
     BCRY_OT_edit_inverse_kinematics,
     BCRY_OT_apply_animation_scale,
