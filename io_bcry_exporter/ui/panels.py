@@ -186,6 +186,14 @@ class BCRY_PT_bone_utilities_panel(View3DPanel, bpy.types.Panel):
         row = col.row(align=True)
         row = col.row()
         row.label(text="Experimental:")
+
+        row = col.row()
+        row.operator(
+            "bcry.fix_bone_orientations",
+            text="Fix Bone Orientations",
+            icon="CON_KINEMATIC",
+        )
+
         row = col.row()
         row.operator(
             "bcry.rebuild_armature",
@@ -202,11 +210,13 @@ class BCRY_PT_mesh_utilities_panel(View3DPanel, bpy.types.Panel):
         col = layout.column(align=True)
 
         col.operator(
-            "bcry.generate_lod_meshes", text="Generate LODs", icon="MOD_EXPLODE"
+            "bcry.generate_lod_meshes",
+            text="Generate LODs",
+            icon="MOD_EXPLODE",
         )
-
         col.separator()
 
+        col.separator()
         col.operator("bcry.find_weightless", text="Find Weightless", icon="WPAINT_HLT")
         col.operator("bcry.remove_weight", text="Remove Weight", icon="WPAINT_HLT")
 
@@ -235,6 +245,13 @@ class BCRY_PT_mesh_utilities_panel(View3DPanel, bpy.types.Panel):
             text="Add UV's to Objects",
             icon="UV_FACESEL",
         )
+
+        col.separator()
+        col.label(text="Cry Decal & Flow Tools:", icon="BRUSH_DATA")
+        col.operator(
+            "bcry.create_decal", text="Create Decal (Project)", icon="MOD_SHRINKWRAP"
+        )
+        col.operator("bcry.flow_paint", text="Flow Paint Tool", icon="BRUSH_DATA")
 
 
 class BCRY_PT_material_utilities_panel(View3DPanel, bpy.types.Panel):
@@ -271,7 +288,7 @@ class BCRY_PT_material_utilities_panel(View3DPanel, bpy.types.Panel):
 class BCRY_PT_user_defined_properties_panel(View3DPanel, bpy.types.Panel):
     bl_label = "User Defined Properties"
 
-    def draw(self, context):
+    def draw(self, layout_context):
         layout = self.layout
         col = layout.column(align=True)
 

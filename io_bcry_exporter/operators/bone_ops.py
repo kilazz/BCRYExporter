@@ -1090,6 +1090,49 @@ class BCRY_OT_rebuild_armature(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class BCRY_OT_fix_bone_orientations(bpy.types.Operator):
+    """Aligns bone tails to child heads to visually fix imported skeletons"""
+
+    bl_label = "Fix Bone Orientations"
+    bl_idname = "bcry.fix_bone_orientations"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        armatures = [obj for obj in context.selected_objects if obj.type == "ARMATURE"]
+
+        # If nothing is selected explicitly but active object is an armature
+        if not armatures:
+            active_obj = context.active_object
+            if active_obj and active_obj.type == "ARMATURE":
+                armatures = [active_obj]
+
+        if not armatures:
+            self.report({"ERROR"}, "Please select your skeleton (armature) first!")
+            return {"CANCELLED"}
+
+        for obj in armatures:
+            context.view_layer.objects.active = obj
+            bpy.ops.object.mode_set(mode="EDIT")
+
+            for bone in obj.data.edit_bones:
+                # If the bone has children, align tail with the head of its first child
+                if bone.children:
+                    child = bone.children[0]
+                    dist = (child.head - bone.head).length
+                    if dist > 0.001:
+                        bone.tail = child.head
+                    else:
+                        bone.length = 0.05
+                else:
+                    # Default tiny length fallback for tip/leaf bones
+                    bone.length = 0.05
+
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        self.report({"INFO"}, "Skeleton visually fixed successfully!")
+        return {"FINISHED"}
+
+
 # Expose classes to operators/__init__.py dynamically
 classes = (
     BCRY_OT_edit_inverse_kinematics,
@@ -1100,4 +1143,5 @@ classes = (
     BCRY_OT_physicalize_skeleton,
     BCRY_OT_clear_skeleton_physics,
     BCRY_OT_rebuild_armature,
+    BCRY_OT_fix_bone_orientations,
 )

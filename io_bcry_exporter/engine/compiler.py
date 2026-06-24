@@ -26,13 +26,93 @@ class RCInstance:
     def __init__(self, config):
         self.__config = config
 
-    def convert_tif(self, source):
-        converter = _TIFConverter(self.__config, source)
-        conversion_thread = threading.Thread(target=converter)
-        conversion_thread.start()
+    def convert_tif(self, source_images):
+        """Prepares images in the main thread, then spawns an RC background thread."""
+
+        # 1. MAIN THREAD: Prepare images (save, invert) BEFORE starting the background thread
+        # This completely avoids context/thread violations with the Blender API.
+        tmp_dir = tempfile.mkdtemp("CryBlend")
+        prepared_files = {}
+
+        for image in source_images:
+            if not image:
+                continue
+
+            try:
+                # Determine paths
+                original_path = image.filepath
+                image_extension = utils.get_extension_from_path(original_path)
+
+                # If it's already a TIF, just add it to the processing queue directly
+                if image_extension.lower() == ".tif":
+                    prepared_files[original_path] = original_path
+                    continue
+
+                tiff_image_path = utils.get_path_with_new_extension(
+                    original_path, "tif"
+                )
+                temp_tiff_path = os.path.join(
+                    tmp_dir, os.path.basename(tiff_image_path)
+                )
+                tiff_image_absolute_path = utils.get_absolute_path(tiff_image_path)
+
+                # Check if green channel inversion is required (Normal maps)
+                is_normal_map = "_ddn" in image.name
+                temp_image = None
+
+                if is_normal_map:
+                    # Create a copy in memory to avoid altering the original in the scene
+                    temp_image = image.copy()
+                    self._invert_green_channel_safe(temp_image)
+                    img_to_save = temp_image
+                else:
+                    img_to_save = image
+
+                # Save as a temporary TIF
+                img_to_save.filepath_raw = temp_tiff_path
+                img_to_save.file_format = "TIFF"
+                img_to_save.save()
+
+                # Restore original paths
+                if not is_normal_map:
+                    img_to_save.filepath = original_path
+
+                # Remove the temporary copy from Blender's memory if one was created
+                if temp_image:
+                    bpy.data.images.remove(temp_image)
+
+                # Map temporary path to the final destination path
+                prepared_files[temp_tiff_path] = tiff_image_absolute_path
+
+            except Exception as e:
+                bcPrint(f"Failed to prepare image {image.name} for RC: {e}", "warning")
+
+        # 2. BACKGROUND THREAD: Pass only disk paths (Blender API is no longer used here)
+        if prepared_files:
+            converter = _TIFConverter(self.__config, prepared_files, tmp_dir)
+            conversion_thread = threading.Thread(target=converter)
+            conversion_thread.start()
+
+    def _invert_green_channel_safe(self, image):
+        """Fast G-channel inversion without using bpy.ops (Safe for all contexts)."""
+        if not image.pixels:
+            return
+
+        import numpy as np
+
+        # Load pixels into numpy array (format: R, G, B, A, R, G, B, A...)
+        pixels = np.empty(len(image.pixels), dtype=np.float32)
+        image.pixels.foreach_get(pixels)
+
+        # Invert every second element (G channel), starting from index 1, step 4
+        pixels[1::4] = 1.0 - pixels[1::4]
+
+        # Push pixels back to the image
+        image.pixels.foreach_set(pixels)
+        image.update()
 
     def convert_dae(self, source):
-        # Safely evaluate file paths in the main thread before dispatching the background worker
+        """Evaluates file paths in the main thread before dispatching the DAE background worker."""
         filepath = bpy.path.ensure_ext(self.__config.filepath, ".dae")
         dae_path = utils.get_absolute_path_for_rc(filepath)
 
@@ -277,38 +357,25 @@ class _DAEConverter:
 
 
 class _TIFConverter:
-    """Saves non-TIF files to temporary TIF format and triggers RC to produce DDS files."""
+    """Triggers RC in a background thread to produce DDS files using pre-processed TIF paths."""
 
-    def __init__(self, config, source):
+    def __init__(self, config, prepared_files, tmp_dir):
         self.__config = config
-        self.__images_to_convert = source
-        self.__tmp_images = {}
-        self.__tmp_dir = tempfile.mkdtemp("CryBlend")
+        self.__prepared_files = prepared_files
+        self.__tmp_dir = tmp_dir
 
     def __call__(self):
-        for image in self.__images_to_convert:
-            rc_params = self.__get_rc_params(image.filepath)
-            tiff_image_path = self.__get_temp_tiff_image_path(image)
+        # WARNING: No bpy.* calls here! Fully safe for background threading.
+        for tmp_image_path, dest_image_path in self.__prepared_files.items():
+            rc_params = self.__get_rc_params(dest_image_path)
+            tiff_image_for_rc = utils.get_absolute_path_for_rc(tmp_image_path)
 
-            tiff_image_for_rc = utils.get_absolute_path_for_rc(tiff_image_path)
             bcPrint(tiff_image_for_rc)
 
-            try:
-                self.__create_normal_texture(image)
-            except Exception as e:
-                bcPrint(f"Failed to invert green channel: {e}", "warning")
-
+            # Trigger external compiler
             rc_process = run_rc(
                 self.__config.texture_rc_path, tiff_image_for_rc, rc_params
             )
-
-            # Re-save the original image after running the RC to
-            # prevent the original one from getting lost
-            try:
-                if "_ddn" in image.name:
-                    image.save()
-            except Exception as e:
-                bcPrint(f"Failed to save original texture after RC run: {e}", "warning")
 
             rc_process.wait()
 
@@ -316,16 +383,6 @@ class _TIFConverter:
             self.__save_tiffs()
 
         self.__remove_tmp_files()
-
-    def __create_normal_texture(self, image):
-        if "_ddn" in image.name:
-            # Make a copy to prevent editing the original image
-            temp_normal_image = image.copy()
-            self.__invert_green_channel(temp_normal_image)
-            # Save to file and delete the temporary image
-            new_normal_image_path = f"{os.path.splitext(temp_normal_image.filepath_raw)[0]}_cb_normal.{os.path.splitext(temp_normal_image.filepath_raw)[1]}"
-            temp_normal_image.save_render(filepath=new_normal_image_path)
-            bpy.data.images.remove(temp_normal_image)
 
     def __get_rc_params(self, destination_path):
         rc_params = [
@@ -341,62 +398,32 @@ class _TIFConverter:
 
         return rc_params
 
-    def __invert_green_channel(self, image):
-        # NOTE: Modifying bpy data from background threads is inherently unsafe in Blender.
-        # This remains unchanged for legacy compatibility, but ideally should be refactored
-        # to the main thread in a future milestone.
-        override = {"edit_image": bpy.data.images[image.name]}
-        bpy.ops.image.invert(override, invert_g=True)
-        image.update()
-
-    def __get_temp_tiff_image_path(self, image):
-        image_extension = utils.get_extension_from_path(image.filepath)
-        bcPrint(image_extension)
-
-        if ".tif" == image_extension:
-            bcPrint(
-                f"Image {image.name!r} is already a tif, not converting",
-                "debug",
-            )
-            return image.filepath
-
-        tiff_image_path = utils.get_path_with_new_extension(image.filepath, "tif")
-        # Prepend our temp directory to isolate generated files safely
-        temp_tiff_path = os.path.join(self.__tmp_dir, os.path.basename(tiff_image_path))
-        tiff_image_absolute_path = utils.get_absolute_path(tiff_image_path)
-
-        if tiff_image_path != image.filepath:
-            self.__save_as_tiff(image, temp_tiff_path)
-            self.__tmp_images[temp_tiff_path] = tiff_image_absolute_path
-
-        return temp_tiff_path
-
-    def __save_as_tiff(self, image, tiff_file_path):
-        originalPath = image.filepath
-
-        try:
-            image.filepath_raw = tiff_file_path
-            image.file_format = "TIFF"
-            image.save()
-
-        finally:
-            image.filepath = originalPath
-
     def __save_tiffs(self):
-        for tmp_image, dest_image in self.__tmp_images.items():
+        for tmp_image, dest_image in self.__prepared_files.items():
+            # Skip if paths match (image was already a TIF)
+            if tmp_image == dest_image:
+                continue
             bcPrint(f"Moving tmp image: {tmp_image!r} to {dest_image!r}", "debug")
-            shutil.move(tmp_image, dest_image)
+            try:
+                shutil.move(tmp_image, dest_image)
+            except Exception as e:
+                bcPrint(f"Failed to move TIF: {e}", "warning")
 
     def __remove_tmp_files(self):
-        for tmp_image in self.__tmp_images:
+        for tmp_image in self.__prepared_files.keys():
             try:
-                bcPrint(f"Removing tmp image: {tmp_image!r}", "debug")
-                os.remove(tmp_image)
-            except FileNotFoundError:
+                if os.path.exists(tmp_image) and self.__tmp_dir in tmp_image:
+                    bcPrint(f"Removing tmp image: {tmp_image!r}", "debug")
+                    os.remove(tmp_image)
+            except OSError:
                 pass
 
-        os.removedirs(self.__tmp_dir)
-        self.__tmp_images.clear()
+        try:
+            if os.path.exists(self.__tmp_dir):
+                os.removedirs(self.__tmp_dir)
+        except OSError:
+            pass
+        self.__prepared_files.clear()
 
 
 def run_rc(rc_path, files_to_process, params=None):
